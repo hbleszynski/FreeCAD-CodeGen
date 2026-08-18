@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freecad-text-agent"
+version = "0.1.0"
+description = "Turn text and drawing references into validated FreeCAD Python console code."
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+api = ["openai>=1.68.0"]
+build = ["pyinstaller>=6", "pillow>=11"]
+
+[project.scripts]
+freecad-agent = "freecad_agent.cli:main"
+
+[project.gui-scripts]
+freecad-agent-gui = "freecad_agent.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["freecad_agent*"]

@@ -1,0 +1,129 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: "pip"
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Set package version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "0.1.0-dev.${{ github.run_number }}"
+          }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Create Windows icon
+        run: python tools/make_icon.py
+
+      - name: Build standalone application
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name "FreeCAD Agent" `
+            --icon "assets\freecad-agent.ico" `
+            --add-data "assets\freecad-agent.png;assets" `
+            --distpath "dist" `
+            --workpath "build" `
+            --specpath "." `
+            "freecad_agent_app.pyw"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build Start-menu installer
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem `
+            "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe", `
+            "$env:ProgramFiles\Inno Setup *\ISCC.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            throw "Inno Setup compiler was not found"
+          }
+          & $iscc.FullName "/DMyAppVersion=$env:APP_VERSION" "installer\FreeCAD-Agent.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Create portable package and checksums
+        shell: pwsh
+        run: |
+          $portable = "release\FreeCAD-Agent-Portable-Windows-x64"
+          New-Item -ItemType Directory -Path $portable -Force | Out-Null
+          Copy-Item "dist\FreeCAD Agent.exe" $portable
+          Copy-Item "README.md", "LICENSE" $portable
+          Compress-Archive `
+            -Path "$portable\*" `
+            -DestinationPath "release\FreeCAD-Agent-Portable-Windows-x64.zip" `
+            -CompressionLevel Optimal `
+            -Force
+          $releaseFiles = Get-Item `
+            "release\FreeCAD-Agent-Setup-Windows-x64.exe", `
+            "release\FreeCAD-Agent-Portable-Windows-x64.zip"
+          $lines = foreach ($file in $releaseFiles) {
+            $hash = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          Set-Content -Path "release\SHA256SUMS.txt" -Value $lines -Encoding ascii
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeCAD-Agent-Windows-x64-${{ env.APP_VERSION }}
+          if-no-files-found: error
+          path: |
+            release/FreeCAD-Agent-Setup-Windows-x64.exe
+            release/FreeCAD-Agent-Portable-Windows-x64.zip
+            release/SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            "release\FreeCAD-Agent-Setup-Windows-x64.exe",
+            "release\FreeCAD-Agent-Portable-Windows-x64.zip",
+            "release\SHA256SUMS.txt"
+          )
+          & gh release create "${{ github.ref_name }}" $assets `
+            --verify-tag `
+            --generate-notes `
+            --title "FreeCAD Agent ${{ github.ref_name }}"
